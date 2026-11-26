@@ -78,6 +78,13 @@ def validate_peristaltic_flow_rate(flow_rate: PeristalticFlowRate) -> None:
     )
 
 
+def _peristaltic_pump_selector(pump: int) -> int:
+  """Encode a peristaltic pump number as a zero-based step selector."""
+  if isinstance(pump, bool) or not isinstance(pump, int) or pump not in (1, 2):
+    raise ValueError("Peristaltic pump must be 1 or 2.")
+  return pump - 1
+
+
 class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
   """Mixin for peristaltic pump step operations."""
 
@@ -146,6 +153,8 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
     duration: int | None = None,
     flow_rate: PeristalticFlowRate = "High",
     cassette: Cassette = "Any",
+    *,
+    pump: int = 2,
   ) -> None:
     """Prime the peristaltic fluid lines.
 
@@ -161,6 +170,7 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
       duration: Fixed duration in seconds (alternative to volume).
       flow_rate: Flow rate ("Low", "Medium", or "High").
       cassette: Cassette type ("Any", "1uL", "5uL", "10uL").
+      pump: Peristaltic pump number (1 for primary, 2 for secondary).
 
     Raises:
       ValueError: If both volume and duration are specified, or if parameters are invalid.
@@ -194,7 +204,7 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
       flow_rate=PERISTALTIC_FLOW_RATE_MAP[flow_rate],
       reverse=True,
       cassette=cassette,
-      pump=1,
+      pump=_peristaltic_pump_selector(pump),
     )
     framed_command = build_framed_message(command=0x90, data=data)
     # Timeout: duration (if specified) + buffer for volume-based priming
@@ -215,6 +225,8 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
     cassette: Cassette = "Any",
     columns: list[int] | None = None,
     rows: list[int] | None = None,
+    *,
+    pump: int = 2,
   ) -> None:
     """Dispense liquid using the peristaltic pump.
 
@@ -233,6 +245,7 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
         For 96-well: 1-12, for 384-well: 1-24, for 1536-well: 1-48.
       rows: List of 1-indexed row group numbers, or None for all.
         For 96-well: only 1 (no selection). For 384-well: 1-2. For 1536-well: 1-4.
+      pump: Peristaltic pump number (1 for primary, 2 for secondary).
 
     Raises:
       ValueError: If parameters are invalid.
@@ -268,7 +281,7 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
       num_pre_dispenses=num_pre_dispenses,
       column_mask=column_mask,
       rows=rows,
-      pump=1,
+      pump=_peristaltic_pump_selector(pump),
     )
     framed_command = build_framed_message(command=0x8F, data=data)
     async with self.batch(plate):
@@ -281,6 +294,8 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
     duration: int | None = None,
     flow_rate: PeristalticFlowRate = "High",
     cassette: Cassette = "Any",
+    *,
+    pump: int = 2,
   ) -> None:
     """Purge the fluid lines using the peristaltic pump.
 
@@ -295,9 +310,10 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
       duration: Fixed duration in seconds (alternative to volume).
       flow_rate: Flow rate ("Low", "Medium", or "High").
       cassette: Cassette type ("Any", "1uL", "5uL", "10uL").
+      pump: Peristaltic pump number (1 for primary, 2 for secondary).
 
     Raises:
-      ValueError: If both volume and duration are specified, or if neither is given.
+      ValueError: If volume, duration, or pump selection is invalid.
     """
     if volume is not None and duration is not None:
       raise ValueError("Specify either volume or duration, not both.")
@@ -333,7 +349,7 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
       flow_rate=PERISTALTIC_FLOW_RATE_MAP[flow_rate],
       reverse=True,
       cassette=cassette,
-      pump=1,
+      pump=_peristaltic_pump_selector(pump),
     )
     framed_command = build_framed_message(command=0x91, data=data)
     # Timeout: duration (if specified) + buffer for volume-based purging
@@ -366,7 +382,7 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
       [5]     Flow rate enum (0=Low, 1=Medium, 2=High)
       [6]     Reverse/submerge (0 or 1)
       [7]     Cassette type (Any: 0, 1uL: 1, 5uL: 2, 10uL: 3)
-      [8]     Pump (Primary: 1, Secondary: 2)
+      [8]     Pump selector (Primary: 0, Secondary: 1)
       [9-10]  Padding (0x0000)
 
     Args:
@@ -375,7 +391,7 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
       flow_rate: Flow rate (0=Low, 1=Medium, 2=High).
       reverse: Whether to reverse/submerge after prime.
       cassette: Cassette type ("Any", "1uL", "5uL", "10uL").
-      pump: Pump (1=Primary, 2=Secondary).
+      pump: Zero-based peristaltic pump selector.
 
     Returns:
       Command bytes (11 bytes).
@@ -424,7 +440,7 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
       [11]    Num pre-dispenses
       [12-17] Column mask (48 bits packed, normal: 1=selected)
       [18]    Row mask (4 bits packed, INVERTED: 0=selected, 1=deselected)
-      [19]    Pump (Primary: 1, Secondary: 2)
+      [19]    Pump selector (Primary: 0, Secondary: 1)
       [20-23] Padding
 
     Args:
@@ -438,7 +454,7 @@ class EL406PeristalticStepsMixin(EL406StepsBaseMixin):
       num_pre_dispenses: Number of pre-dispenses (default 2).
       column_mask: List of column indices (0-47) or None for all columns.
       rows: List of row numbers (1-4) or None for all rows.
-      pump: Pump (1=Primary, 2=Secondary).
+      pump: Zero-based peristaltic pump selector.
 
     Returns:
       Command bytes (24 bytes).

@@ -7,9 +7,47 @@ This module contains tests for peristaltic pump-related step methods:
 """
 
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from pylabrobot.legacy.plate_washing.biotek.el406 import ExperimentalBioTekEL406Backend
 from pylabrobot.legacy.plate_washing.biotek.el406.mock_tests import PT96, PT1536, EL406TestCase
+
+
+class TestEL406BackendPeristalticPumpSelection(EL406TestCase):
+  """Test pump selection through the public peristaltic methods."""
+
+  async def test_peristaltic_steps_encode_pump_selection(self):
+    """Encode both pump numbers and preserve the selector when omitted."""
+    operations = (
+      (self.backend.peristaltic_prime, 0x90, 8),
+      (self.backend.peristaltic_dispense, 0x8F, 19),
+      (self.backend.peristaltic_purge, 0x91, 8),
+    )
+    for step, opcode, offset in operations:
+      for kwargs, selector in (({}, 1), ({"pump": 1}, 0), ({"pump": 2}, 1)):
+        with (
+          self.subTest(step=step.__name__, **kwargs),
+          patch.object(self.backend, "_send_step_command", new_callable=AsyncMock) as send,
+        ):
+          await step(PT96, volume=100.0, **kwargs)
+          send.assert_awaited_once()
+          frame = send.await_args.args[0]
+          self.assertEqual(int.from_bytes(frame[2:4], "little"), opcode)
+          self.assertEqual(frame[11 + offset], selector)
+
+  async def test_peristaltic_steps_reject_invalid_pumps_before_writing(self):
+    """Reject unrecognized pump numbers before accessing the transport."""
+    before = list(self.backend.io.written_data)
+    for step in (
+      self.backend.peristaltic_prime,
+      self.backend.peristaltic_dispense,
+      self.backend.peristaltic_purge,
+    ):
+      for pump in (0, 3, True, 1.0):
+        with self.subTest(step=step.__name__, pump=pump):
+          with self.assertRaisesRegex(ValueError, "pump"):
+            await step(PT96, volume=100.0, pump=pump)
+          self.assertEqual(self.backend.io.written_data, before)
 
 
 class TestEL406BackendPeristalticDispense(EL406TestCase):
@@ -374,14 +412,14 @@ class TestPeristalticDispenseCommandEncodingWithMasks(unittest.TestCase):
     self.assertEqual(cmd[13:18], bytes([0x00, 0x00, 0x00, 0x00, 0x00]))
 
   def test_peristaltic_dispense_command_pump_at_byte19(self):
-    """Pump should be at byte 19 (1=Primary, 2=Secondary)."""
+    """The zero-based pump selector should be at byte 19."""
     cmd = self.backend._build_peristaltic_dispense_command(
       PT96,
       volume=300.0,
       flow_rate=5,
-      pump=2,  # Secondary
+      pump=0,
     )
-    self.assertEqual(cmd[19], 2)
+    self.assertEqual(cmd[19], 0)
 
   def test_peristaltic_dispense_command_none_column_mask_all_wells(self):
     """Command with None column_mask should encode all wells (0xFF * 6)."""
@@ -403,7 +441,7 @@ class TestPeristalticDispenseCommandEncodingWithMasks(unittest.TestCase):
     self.assertEqual(cmd[18], 0x00)
 
   def test_peristaltic_dispense_command_default_pump(self):
-    """Default pump should be 1 (Primary)."""
+    """The default pump selector should be 1."""
     cmd = self.backend._build_peristaltic_dispense_command(
       PT96,
       volume=300.0,
@@ -459,7 +497,7 @@ class TestPeristalticDispenseCommandEncodingWithMasks(unittest.TestCase):
       flow_rate=7,
       column_mask=[0, 47],  # First and last wells
       rows=[1, 2, 3, 4],  # All rows selected
-      pump=2,
+      pump=1,
     )
 
     self.assertEqual(cmd[0], 0x00)  # 1536-well plate type
@@ -473,7 +511,7 @@ class TestPeristalticDispenseCommandEncodingWithMasks(unittest.TestCase):
     # Row mask: all 4 rows selected -> inverted = 0x00
     self.assertEqual(cmd[18], 0x00)
     # Pump at byte 19
-    self.assertEqual(cmd[19], 2)
+    self.assertEqual(cmd[19], 1)
 
 
 class TestEL406BackendPeristalticPurge(EL406TestCase):
